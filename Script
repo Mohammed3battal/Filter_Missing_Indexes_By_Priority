@@ -1,0 +1,76 @@
+;WITH MissingIndexes AS (
+    SELECT 
+        CONVERT(varchar(30), GETDATE(), 126) AS [Current_Run_Time],
+        sysinfo.sqlserver_start_time AS [SQL_Server_Last_Startup],
+        DATEDIFF(DAY, sysinfo.sqlserver_start_time, GETDATE()) AS [Days_Since_Last_Restart],
+        
+        DB_NAME(mid.database_id) AS [Database_Name],
+        
+        CONVERT(decimal(10, 2), migs.avg_total_user_cost) AS [Avg_ResourceCost_Without_Index],
+        CONVERT(decimal(10, 2), migs.avg_user_impact) AS [Estimated_Performance_Improvement_Percentage],
+        
+        migs.user_seeks + migs.user_scans AS [Number_of_Times_This_Code_Was_Executed],
+        
+        CONVERT(decimal(28, 2), 
+            migs.avg_total_user_cost * migs.avg_user_impact * 
+            (migs.user_seeks + migs.user_scans)
+        ) AS [Estimated_Improvement_Score],
+        
+        CASE 
+            WHEN (migs.user_seeks + migs.user_scans) <= 100 THEN 'Ignore'
+            WHEN (migs.user_seeks + migs.user_scans) BETWEEN 101 AND 1000 THEN 
+                CASE 
+                    WHEN migs.avg_total_user_cost < 1 AND migs.avg_user_impact < 50 THEN 'Low Priority'
+                    WHEN migs.avg_total_user_cost BETWEEN 1 AND 10 AND migs.avg_user_impact BETWEEN 50 AND 80 THEN 'Medium Priority'
+                    WHEN migs.avg_user_impact > 80 THEN 'High Priority'
+                    ELSE 'Low Priority'
+                END
+            WHEN (migs.user_seeks + migs.user_scans) > 1000 THEN 
+                CASE 
+                    WHEN migs.avg_user_impact > 80 THEN 'High Priority'
+                    WHEN migs.avg_total_user_cost > 10 THEN 'High Priority'
+                    ELSE 'Medium Priority'
+                END
+            ELSE 'Unknown'
+        END AS [Index_Recommendation_Level],
+        
+        'CREATE INDEX missing_index_' + 
+            CONVERT(varchar, mig.index_group_handle) + '_' + 
+            CONVERT(varchar, mid.index_handle) + ' ON ' + 
+            mid.statement + 
+            ' (' + ISNULL(mid.equality_columns, '') +
+            CASE 
+                WHEN mid.equality_columns IS NOT NULL AND mid.inequality_columns IS NOT NULL THEN ',' 
+                ELSE '' 
+            END +
+            ISNULL(mid.inequality_columns, '') + ')' +
+            ISNULL(' INCLUDE (' + mid.included_columns + ')', '') 
+            AS [Create_Index_Statement]
+
+    FROM 
+        sys.dm_db_missing_index_groups AS mig
+    JOIN 
+        sys.dm_db_missing_index_group_stats AS migs 
+        ON migs.group_handle = mig.index_group_handle
+    JOIN 
+        sys.dm_db_missing_index_details AS mid 
+        ON mig.index_handle = mid.index_handle
+    CROSS JOIN 
+        sys.dm_os_sys_info AS sysinfo
+)
+
+SELECT *
+FROM MissingIndexes
+
+
+
+--WHERE 
+    --Index_Recommendation_Level = 'High Priority'
+	--and Avg_ResourceCost_Without_Index > 5
+   --AND Database_Name = 'DatabaseName'
+
+
+ORDER BY 
+    Estimated_Performance_Improvement_Percentage DESC;
+
+
